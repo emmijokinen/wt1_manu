@@ -1,0 +1,546 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(ggrepel)
+library(ggnewscale)
+library(dplyr)
+library(scico)
+library(viridis)
+```
+
+```{r}
+# volcano plot function
+volcanoplot <- function(df, cutoff_FDR=1, cutoff_pval=1, genes = NULL, topgenes=F, ntopgenes=30,title="",colsr = c("tomato","#941100"),colsl=c("#006AB9","#00497F")){
+  
+  plotdata <- df
+  plotdata$gene <- rownames(plotdata)
+  plotdata$direction <- "up"
+  plotdata$direction[plotdata$avg_log2FC<0] <- "down"
+  plotdata$direction[plotdata$p_val_adj>0.05] <- "ns"
+  plotdata$direction <- factor(plotdata$direction,levels=c("up","down","ns")) 
+  
+  labelgenes <- top_n(plotdata, -ntopgenes, wt=p_val_adj) %>%
+      dplyr::select(gene) %>%
+      tibble::deframe()
+
+  if(!is.null(genes)){
+    labelgenes <- genes
+  } else if (topgenes == T){
+    labelgenes <- top_n(plotdata, -ntopgenes, wt=p_val) %>%
+      dplyr::select(gene) %>%
+      tibble::deframe()
+  } else{ 
+    labelgenes <- plotdata$gene
+  }
+  
+  ggplot(plotdata, aes(x=avg_log2FC, y=-log10(p_val_adj), label = gene,color=direction)) +
+    geom_point(alpha=0.8,size=1) + 
+    scale_color_manual(values = c(colsr[1],colsl[1],"grey85")) + 
+    guides(color = "none") + new_scale_colour() +
+    geom_text_repel(aes(label=ifelse(p_val_adj <= cutoff_FDR & p_val <= cutoff_pval & 
+                                    gene %in% labelgenes, as.character(gene),''),
+                    color=direction), max.time = 5,max.iter=100000, 
+                    point.padding = 0.05,  max.overlaps = 120, size=2.5,segment.size=0.2) +
+    coord_cartesian(clip = "off") +
+    ylab("p.adj (-log10)") + xlab("Average fold change (log2)") +
+    scale_color_manual(values = c(colsr[2],colsl[2],"grey30")) +
+    guides(color = F) + ggtitle(title) + theme_classic() + 
+    theme(axis.text=element_text(size = 11), axis.title=element_text(size = 12))
+}
+```
+
+# Novel WT1-specific T cells from 6 AML patients and 6 healthy donors
+
+```{r}
+# Read in preprocessed object
+sc_wt1 <- readRDS("sc_wt1.RDS")
+```
+
+```{r}
+sc_wt1$Clusters <- factor(recode(sc_wt1$RNA_snn_res.0.3, 
+                                    `0`="Activated Tem/Temra", `1`="Transitional Tem", `2`="Tn/Tcm_1", 
+                                    `3`= "Tn/Tcm_2", `4`="Activated Teff", `5`="Activated Tem/Temra", 
+                                    `6`="Tpex", `7`= "Transitional Tem"),
+                             levels=c("Tn/Tcm_1","Tn/Tcm_2","Transitional Tem",
+                                      "Activated Teff", "Activated Tem/Temra","Tpex"))
+
+```
+
+
+## UMAP with clusters
+```{r,fig.width=6,fig.height=4.2,dpi=300}
+DimPlot(sc_wt1,reduction="HUMAP20",group.by="Clusters",pt.size=1,alpha=0.8,
+         cols=c("#DEDDCF","#DFDEC0","#EBB98A","#C16358","#22A1A7","#0E284C")) + 
+    coord_equal() + theme_void()
+ggsave("figures/WT1data_T-cell_clusters.pdf",width=6, height=4.2)
+```
+
+## Markers used for defining phenotypes
+```{r,fig.width=12, fig.height=3.5, dpi=300}
+feats = list()
+feats$`Tn/Tcm`   <- c("IL7R", "SELL", "TCF7", "LEF1", "CCR7")
+feats$Cycling    <- c("MKI67", "PCNA", "CDK1")
+feats$Tem        <- c("CCL5", "CCL4", "CCL3", "CXCR3")
+feats$Cytotoxic  <- c("GZMK", "GZMH", "GZMA", "GZMB", "PRF1", "NKG7", "FCGR3A", "EOMES")
+feats$Tpex       <- c("BCL2", "HAVCR2", "TOX", "TBX21", "PDCD1")
+
+DotPlot(sc_wt1,feature=feats,group.by="Clusters") & 
+  scale_color_scico(palette = "vik",midpoint = 0,begin=0.1,end=0.9) & 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) &  
+  scale_y_discrete(limits=rev)
+ggsave("figures/WT1data_Tcell_phenotype_dotplot.pdf",width =12, height =3.5)
+```
+
+
+
+## Cell origins / conditions
+
+```{r,fig.width=8,fig.height=5,dpi=300}
+DimPlot(sc_wt1, group.by = c("Origin"),pt.size = 1.5, reduction="HUMAP20",
+        cols=c("#A8E0C8","#0E8D63","#B2BBE8","#303293"), alpha=0.9,
+        order=c("RMF AML","RMF Healthy","VLD AML","VLD Healthy")) & 
+  theme_void() & guides(color=guide_legend(ncol=1,override.aes = list(size=3))) & 
+  coord_fixed()
+ggsave("figures/WT1data_Tcell_origin.pdf",width=8, height=5)
+```
+
+
+```{r,fig.width=8,fig.height=5,dpi=300}
+DimPlot(sc_wt1,reduction="HUMAP20",group.by="GLIPH2.RMF.VLD",ncol=1,
+        cols=c("grey80","#5CC999","#4F51C1"),alpha = 0.9, 
+        pt.size=1.2,order=c("RMF","VLD")) & theme_void() & 
+  ggtitle("GLIPH2 selected TCRs") & coord_fixed() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=3)))
+ggsave("figures/WT1data_Tcell_selected_by_gliph2.pdf",width=8, height=5)
+```
+
+
+## Top clones in each condition
+
+```{r}
+clone_ha_pal <- c("grey95","#303293","#5457D9","#7683E6","#94A9FF","#B1C6FE",
+                  "#A81b37","#DA4F60","#F58C9B", "#FBAA89","#FFCF9C")
+```
+
+
+### RMF
+```{r}
+df_counts.RMF.h <- data.frame(sort(table(sc_wt1$CDR3AB[sc_wt1$epitope=="RMF" & 
+                              sc_wt1$orig.ident=="scRMFh"]),decreasing = TRUE))
+colnames(df_counts.RMF.h) <- c("CDR3AB","count")
+df_counts.RMF.h$CDR3AB <- as.character(df_counts.RMF.h$CDR3AB)
+
+df_counts.RMF.aml <- data.frame(sort(table(sc_wt1$CDR3AB[sc_wt1$epitope=="RMF" & 
+                              sc_wt1$orig.ident=="scRMFaml"]),decreasing = TRUE))
+colnames(df_counts.RMF.aml) <- c("CDR3AB","count")
+df_counts.RMF.aml$CDR3AB <- as.character(df_counts.RMF.aml$CDR3AB)
+
+
+sc_wt1$topClonesRMF.h.aml <- ""
+for (t in df_counts.RMF.h$CDR3AB[1:5]){
+  sc_wt1$topClonesRMF.h.aml[sc_wt1$CDR3AB==t & sc_wt1$epitope=="RMF"] <- t 
+}
+for (t in df_counts.RMF.aml$CDR3AB[1:5]){
+  sc_wt1$topClonesRMF.h.aml[sc_wt1$CDR3AB==t & sc_wt1$epitope=="RMF"] <- t 
+}
+sc_wt1$topClonesRMF.h.aml <- factor(sc_wt1$topClonesRMF.h.aml,
+                                       levels=c(df_counts.RMF.aml$CDR3AB[5:1],
+                                                df_counts.RMF.h$CDR3AB[5:1],""))
+
+```
+
+```{r,fig.width=10,fig.height=5,dpi=300}
+# RMF top clones
+DimPlot(subset(sc_wt1,epitope=="RMF"), group.by = c("topClonesRMF.h.aml"),
+        pt.size = 1.5,cols=clone_ha_pal,order=levels(sc_wt1$topClonesRMF.h.aml),
+        reduction="HUMAP20",alpha=.9) & theme_void() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) & coord_fixed() & 
+  scale_color_manual(labels = paste(rev(levels(sc_wt1$topClonesRMF.h.aml)),
+                                    rev(c(paste0("(",c(df_counts.RMF.aml$count[5:1],df_counts.RMF.h$count[5:1]),")"),"other"))),
+                     values = clone_ha_pal)
+ggsave("figures/WT1data_RMF_top_clones.pdf",width=10,height=5)
+```
+
+
+
+### VLD
+```{r}
+df_counts.VLD.h <- data.frame(sort(table(sc_wt1$CDR3AB[sc_wt1$epitope=="VLD" & 
+                              sc_wt1$orig.ident=="scVLDh"]),decreasing = TRUE))
+colnames(df_counts.VLD.h) <- c("CDR3AB","count")
+df_counts.VLD.h$CDR3AB <- as.character(df_counts.VLD.h$CDR3AB)
+
+df_counts.VLD.aml <- data.frame(sort(table(sc_wt1$CDR3AB[sc_wt1$epitope=="VLD" & 
+                              sc_wt1$orig.ident=="scVLDaml"]),decreasing = TRUE))
+colnames(df_counts.VLD.aml) <- c("CDR3AB","count")
+df_counts.VLD.aml$CDR3AB <- as.character(df_counts.VLD.aml$CDR3AB)
+
+sc_wt1$topClonesVLD.h.aml <- ""
+for (t in df_counts.VLD.h$CDR3AB[1:5]){
+  sc_wt1$topClonesVLD.h.aml[sc_wt1$CDR3AB==t & sc_wt1$epitope=="VLD"] <- t 
+}
+for (t in df_counts.VLD.aml$CDR3AB[1:5]){
+  sc_wt1$topClonesVLD.h.aml[sc_wt1$CDR3AB==t & sc_wt1$epitope=="VLD"] <- t 
+}
+sc_wt1$topClonesVLD.h.aml <- factor(sc_wt1$topClonesVLD.h.aml,
+                                       levels=c(df_counts.VLD.aml$CDR3AB[5:1],
+                                                df_counts.VLD.h$CDR3AB[5:1],""))
+```
+
+```{r,fig.width=10,fig.height=5,dpi=300}
+DimPlot(subset(sc_wt1,epitope=="VLD"), group.by = c("topClonesVLD.h.aml"),
+        pt.size = 1.5,cols=clone_ha_pal,order=levels(sc_wt1$topClonesVLD.h.aml),
+        reduction="HUMAP20",alpha=.9) & theme_void() &
+  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) & coord_fixed() & 
+  scale_color_manual(labels = paste(rev(levels(sc_wt1$topClonesVLD.h.aml)),
+                                    rev(c(paste0("(",c(df_counts.VLD.aml$count[5:1],df_counts.VLD.h$count[5:1]),")"),"other"))),
+                     values = clone_ha_pal)
+ggsave("figures/WT1data_VLD_top_clones.pdf",width=10,height=5)
+```
+
+# CML-PB-SC
+
+```{r}
+# Load preprocessed object with CML-PB-SC T-cell data
+sc_cml <- readRDS("sc_cml.RDS")
+```
+
+
+## UMAP with clusters
+
+```{r,fig.width=6,fig.height=4.2,dpi=300}
+DimPlot(sc_cml,reduction="HUMAP20",group.by="Clusters",cols=c("#DEDDCF","#EBB98A","#097393","#4B296B","#3D7144"),pt.size=1,alpha=0.8) + coord_equal() + theme_void()
+ggsave("figures/CML-PB-SC_clusters.pdf",device=pdf,width=6, height=4.2)
+```
+
+
+## Markers used for defining cluster phenotypes
+```{r,fig.width=12,fig.height=3.5,dpi=300}
+feats <- list()
+feats$Tn <- c("IL7R", "LTB", "SELL","CCR7", "LEF1")
+feats$Tem <- c("CXCR3", "NFKB1", "GZMK", "CXCR4")
+feats$Trm <- c( "ITGA1", "CXCR6", "CD69", "ITGAE", "CCL3")
+feats$Temra <- c("GZMA", "ZNF683", "PRF1", "GZMH", "PFN1", "LCK", "CX3CR1") 
+feats$`NK-like` <- c("FCGR3A", "KLRC3","KIR2DL1", "KIR3DL2", "KLRF1")
+feats$`IFN CTL` <-c("MX1","GBP1","STAT1","EIF2AK2","ISG15")
+feats$MAIT <- c("SLC4A10", "CEBPD", "NCR3")
+
+DotPlot(sc_cml,features = feats,group.by="Clusters") & scale_color_scico(palette = "vik",midpoint = 0,begin=0.1,end=0.9) & theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) & scale_y_discrete(limits=rev)
+ggsave("figures/CML-PB-SC_cluster_markers.pdf",device=pdf,width=12, height=3.5)
+
+```
+
+## Epitope-specificity predictions
+```{r}
+epi_cols=list(" VLD"="#00CC95"," RMF"="#4D51C8"," VLD RMF"="#579AA7", " NLV"="#F3F1A9", " GIL"="#F0B7B0", " VLD GIL"="#E57578", " GLC"="#B8CCE1", " YLQ"="#A36B75"," ELA"="#B29E62"," "="grey90")
+#CD8_seurat_tcr$preds[CD8_seurat_tcr$preds==""] <- " "  # change empty strings to a space to be able to set a color for them
+```
+
+```{r,fig.width=16.25,fig.height=7}
+DimPlot(sc_cml,group.by="preds",cols=(epi_cols),reduction="HUMAP20",
+        order=rev(names(epi_cols)[1:9]), pt.size=1.2,alpha=0.8,split.by = "ID",ncol=5) & theme_void() &  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) 
+ggsave("figures/CML-PB-SC_predictions-by-patient.pdf",device = pdf,width=16.25, height = 7)
+```
+
+## Top clones
+
+```{r}
+IRMF <- sc_cml$pred001_RMF # Locations of RMF specific T cells
+IRMF[is.na(IRMF)] <- F # set NAs to false
+cdr3ab_RMF <- sc_cml$CDR3AB[IRMF] # select CDR3AB for RMF-specific T cells
+# Sort RMF-specific T cell clones so that most frequent are first
+df_RMF <- data.frame(sort(table(unname(cdr3ab_RMF)),decreasing = T) )
+head(df_RMF)
+```
+
+```{r}
+# Same for VLD
+IVLD <- sc_cml$pred001_VLD
+IVLD[is.na(IVLD)] <- F
+cdr3ab_VLD <- sc_cml$CDR3AB[IVLD]
+df_VLD <- data.frame(sort(table(unname(cdr3ab_VLD)),decreasing = T))
+head(df_VLD)
+```
+
+```{r}
+# meta data column where top clones and counts will be saved
+sc_cml$topClonesRMFVLD <- "" 
+o <- c() # Array to define order of the Clones in figure
+
+# Top VLD clones
+for (i in c(1:3,5)){ # select top 4, choose TCR with TCRAB for the tied 4th
+  t <- df_VLD$Var1[i]
+  if ( str_sub(t,1,1)=="_" ){t <- paste0("NA",t)} # Add NA if starts with _
+  count <- as.character(df_VLD$Freq[i])
+  tc <- paste0(t, " (",count,")")
+  sc_cml$topClonesRMFVLD[sc_cml$CDR3AB==df_VLD$Var1[i] & 
+                                  sc_cml$pred001_VLD==T] <- tc
+  o <- c(o,tc)
+}
+
+# Top RMF clones
+for (i in 1:4){ # select top for TCRs
+  t <- df_RMF$Var1[i]
+  if ( str_sub(t,1,1)=="_" ){t <- paste0("NA",t)}
+  count <- as.character(df_RMF$Freq[i])
+  tc <- paste0(t, " (",count,")")
+  sc_cml$topClonesRMFVLD[sc_cml$CDR3AB==df_RMF$Var1[i] & 
+                                  sc_cml$pred001_RMF==T] <- tc
+  o <- c(o,tc)
+}
+o <- rev(o)
+```
+
+```{r}
+# Define colors
+clone_RMFVLD_pal <- c("grey90","#DBC3DA", "#BC76BC", "#883B88", "#5D2E6C",# other + VLD colors
+                      "#B2E6EF", "#6AA8B4", "#438674", "#1D5A34" ) # RMF colors
+```
+
+
+```{r,fig.width=8.4,fig.height=4.2,dpi=300}
+DimPlot(sc_cml, group.by = c("topClonesRMFVLD"), order=o,
+        pt.size = 1.5,cols=clone_RMFVLD_pal,
+        reduction="HUMAP20",alpha=.9) & theme_void() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) & coord_fixed() 
+ggsave("figures/CML-PB-SC_topclonesRMFVLD.pdf",device=pdf,width=8.4,height = 4.2)
+```
+
+
+# AML-BM-SC dataset
+
+```{r}
+# Read in preprocessed object
+sc_aml <- readRDS("sc_aml.RDS")
+```
+
+
+## UMAP with clusters
+```{r,fig.width=6,fig.height=4.2,dpi=300}
+DimPlot(sc_aml,group.by="Clusters",reduction="HUMAP20",pt.size=1,alpha=0.8,
+        cols=c("#DEDDCF","#EBB98A","#DC6158","#097393","#22A1A7","#4B296B")) & 
+  theme_void() & coord_fixed(ratio=1.2) & 
+  guides(colour = guide_legend(override.aes = list(size=5))) 
+ggsave("figures/AML-BM-SC_clusters.pdf",device=pdf,width=6, height=4.2)
+```
+
+
+
+## Markers used for defining cluster phenotypes
+
+
+```{r,fig.width=12,fig.height=3.5,dpi=300}
+feats <- list()
+feats$Tn <- c("CCR7", "LEF1", "LTB", "IL7R", "SELL")
+feats$Tem <- c("NFKB1", "CXCR3", "GZMK", "CXCR4")
+feats$Trm <- c( "CCL3", "CXCR6", "CD69", "ITGAE", "ITGA1")
+feats$Temra <- c("ZNF683", "CX3CR1", "LCK", "GZMH", "PFN1", "PRF1", "GZMA") 
+feats$`NK-like` <- c("FCGR3A", "KLRC3","KIR2DL1", "KIR3DL2", "KLRF1")
+feats$`IFN CTL` <-c("EIF2AK2", "GBP1", "STAT1", "MX1", "ISG15")
+
+DotPlot(sc_aml,features = feats,group.by="Clusters") & scale_color_scico(palette = "vik",midpoint = 0,begin=0.1,end=0.9) & theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) & scale_y_discrete(limits=rev)
+ggsave("figures/AML-BM-SC_cluster_markers.pdf",device=pdf,width=12, height=3.5)
+
+```
+
+## Epitope-specificity predictions
+```{r,fig.width=16.25,fig.height=7,dpi=300}
+DimPlot(sc_aml,group.by="preds",cols=(epi_cols),reduction="HUMAP20",
+        order=rev(names(epi_cols)[1:9]), pt.size=1.2,alpha=0.8,split.by = "ID",ncol=5) & theme_void() &  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) 
+ggsave("figures/AML-BM-SC_predictions-by-patient.pdf",device = pdf,width=16.25, height = 7)
+```
+
+```{r}
+IRMF <- sc_aml$pred001_RMF # Locations of RMF specific T cells
+IRMF[is.na(IRMF)] <- F # set NAs to false
+cdr3ab_RMF <- sc_aml$CDR3AB[IRMF] # select CDR3AB for RMF-specific T cells
+# Sort RMF-specific T cell clones so that most frequent are first
+df_RMF <- data.frame(sort(table(unname(cdr3ab_RMF)),decreasing = T) )
+head(df_RMF)
+```
+
+```{r}
+# Same for VLD
+IVLD <- sc_aml$pred001_VLD
+IVLD[is.na(IVLD)] <- F
+cdr3ab_VLD <- sc_aml$CDR3AB[IVLD]
+df_VLD <- data.frame(sort(table(unname(cdr3ab_VLD)),decreasing = T))
+head(df_VLD)
+```
+
+```{r}
+# meta data column where top clones and counts will be saved
+sc_aml$topClonesRMFVLD <- "" 
+o <- c() # Array to define order of the Clones in figure
+
+# Top VLD clones
+for (i in c(1,3:5,2)){ # select top 5. Note: Number 2 was also in top 5 for RMF
+  t <- df_VLD$Var1[i]
+  if ( str_sub(t,1,1)=="_" ){t <- paste0("NA",t)} # Add NA if starts with _
+  count <- as.character(df_VLD$Freq[i])
+  tc <- paste0(t, " (",count,")")
+  sc_aml$topClonesRMFVLD[sc_aml$CDR3AB==df_VLD$Var1[i] & 
+                                  sc_aml$pred001_VLD==T] <- tc
+  o <- c(o,tc)
+}
+
+# Top RMF clones
+for (i in c(1:3,5)){ # select top 5. Note: Number 4 was also in top 5 for VLD, only included above
+  t <- df_RMF$Var1[i]
+  if ( str_sub(t,1,1)=="_" ){t <- paste0("NA",t)}
+  count <- as.character(df_RMF$Freq[i])
+  tc <- paste0(t, " (",count,")")
+  sc_aml$topClonesRMFVLD[sc_aml$CDR3AB==df_RMF$Var1[i] & 
+                                  sc_aml$pred001_RMF==T] <- tc
+  o <- c(o,tc)
+}
+o <- rev(o)
+```
+
+
+```{r}
+# Define colors
+cloneAML_RMFVLD_pal <- c("grey90","#DBC3DA", "#BC76BC", "#883B88", "#5D2E6C",# other + VLD colors
+                      "#D38E4B", "#B2E6EF", "#6AA8B4", "#438674", "#1D5A34" ) # VLD/RMF + RMF colors
+
+```
+
+## Top clones
+legend needs to be formulated manually afterwards (cut and paste)
+VLD with purple colors, RMF with blue-green
+```{r,fig.width=8.4,fig.height=4.2,dpi=300}
+DimPlot(sc_aml, group.by = c("topClonesRMFVLD"), order=o,
+        pt.size = 1,cols=cloneAML_RMFVLD_pal,
+        reduction="HUMAP20",alpha=.9) & theme_void() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=4))) & coord_fixed() 
+ggsave("figures/AML-BM-SC_topclonesRMFVLD.pdf",device=pdf,width=8.4,height = 4.2)
+```
+
+
+## Anti-WT1 TCRs vs anti-viral TCRs
+```{r}
+sc_aml$WT1.viral <- "unknown"
+# Set as WT1 TCRs predicted to recognize VLD or RMF
+sc_aml$WT1.viral[sc_aml$pred001_VLD==T | sc_aml$pred001_RMF==T] <- "anti-WT1"
+# Set as viral TCRs predicted to recognize GIL (IAV), GLC (EBV), NLV (CMV), YLQ (SARS-CoV-2)
+sc_aml$WT1.viral[sc_aml$pred001_GIL==T | sc_aml$pred001_GLC==T | sc_aml$pred001_NLV==T | sc_aml$pred001_YLQ==T] <- "anti-viral"
+# Set as empty TCRs that are predicted to recognize both a WT1 and a viral epitope
+sc_aml$WT1.viral[(sc_aml$pred001_VLD==T | sc_aml$pred001_RMF==T) & (sc_aml$pred001_GIL==T | sc_aml$pred001_GLC==T | sc_aml$pred001_NLV==T | sc_aml$pred001_YLQ==T)] <- "unknown"
+```
+
+
+```{r,fig.width=5,fig.height=4.1,dpi=300}
+DimPlot(sc_aml, group.by="WT1.viral",reduction="HUMAP20",cols=c("grey90","#E79234","#00C0C0"),order=c("anti-WT1","anti-viral"),alpha=0.8,pt.size=1.3,stroke.size = 0.1) & theme_void()
+#dev.print(pdf,"/Users/jokiemmi/Desktop/projects/WT1/figures/AML-BM-SC_WT1-viral_orange-cyan.pdf")
+ggsave("figures/AML-BM-SC_anti-WT1viral.pdf",device=pdf,width=5,height = 4.1)
+```
+
+```{r}
+m.aml.WT1.viral <- FindMarkers(sc_aml,group.by = "WT1.viral",ident.1 = "anti-WT1",ident.2="anti-viral")
+m.aml.WT1.viral
+```
+
+```{r,fig.height=9,fig.width=15,dpi=300}
+volcanoplot(m.aml.WT1.viral, topgenes = T, ntopgenes = 100, 
+            cutoff_pval=10**(-2), title="AML-BM-SC: anti-WT1 vs anti-viral",
+            colsr=c("#00C0C0","#32737F"),colsl=c("#E79234","tomato4")) + 
+  scale_x_continuous(expand = c(0.01,0.01)) + 
+  scale_y_continuous(expand = c(0.01,0.01)) +
+  theme_light() + theme(title=element_text(size=10),axis.title.x = element_text(size=10),axis.title.y = element_text(size=10)) 
+ggsave("figures/AML-BM-SC_topclonesRMFVLD.pdf",device=pdf,width=15,height = 9)
+```
+
+## AML-BM-SC HSPC, Mono, and DC cell WT1-expression
+
+```{r}
+# Read in preprocessed object
+seurat_bm <- readRDS("sc_aml_HSPC-mono-DC.RDS")
+```
+
+```{r}
+celltype_cols1 = list(
+  HSPC = "#FFE489",
+  Mono = "#acabdc",
+  DC = "#bd9e39"
+)
+
+celltype_cols2 = list( 
+  HSC = "#FFF1C6",
+  LMPP = "#fdd0a2",
+  EMP = "#FFB8BA",
+  'Early Eryth' = "#F78687",
+  'Prog Mk' ="#972525",
+  GMP= "#dadaeb",
+  'CD14 Mono' = "#acabdc",
+  'CD16 Mono' = "#A77FC4",
+  Macrophage = "#5F54B5",
+  BaEoMa = "#393b79",
+  'pre-mDC' = "#e7cb94",
+  cDC1 =  "#e7ba52",
+  cDC2 = "#bd9e39",
+  ASDC = "#8c6d31",
+  'pre-pDC' = "#ABFFE6",
+  pDC = "#2FD1A3",
+  CLP = "#c7e9c0", 
+  'pro B' = "#a1d99b",
+  'pre B' = "#74c476",
+  'transitional B' = "#31a354",
+  'Memory B' = "#117234",
+  Stromal = "#F67BF6"
+)
+```
+
+```{r}
+seurat_bm$predicted.celltype.l1 <- factor(seurat_bm$predicted.celltype.l1, levels=names(celltype_cols1))
+seurat_bm$predicted.celltype.l2 <- factor(seurat_bm$predicted.celltype.l2, levels=names(celltype_cols2))
+```
+
+
+### Simple celltypes predicted with Azimuth
+```{r,fig.width=9,fig.height=6.5,dpi=300}
+DimPlot(seurat_bm, group.by = c("predicted.celltype.l1"),pt.size = 0.8,
+        cols=celltype_cols1,raster=FALSE,reduction="HUMAP20",alpha=0.8) & 
+  xlab("UMAP_1") & ylab("UMAP_2") & theme_light() & coord_equal() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=5)))
+ggsave("figures/AML-BM-SC_BM-celltypes_azi-1.pdf",width=9, height=6.5)
+```
+
+
+### Detailed celltypes predicted with Azimuth
+```{r,fig.width=9,fig.height=6.5,dpi=300}
+DimPlot(seurat_bm, group.by = c("predicted.celltype.l2"),pt.size = 0.8,
+        cols=celltype_cols2,raster=FALSE,reduction="HUMAP20",alpha=0.8) & 
+  xlab("UMAP_1") & ylab("UMAP_2") & theme_light() & coord_equal() & 
+  guides(color=guide_legend(ncol=1,override.aes = list(size=5)))
+ggsave("figures/AML-BM-SC_BM-celltypes_azi-2.pdf",width=9, height=6.5)
+```
+
+### WT1 expression UMAP
+```{r,fig.width=32,fig.height=4.5,dpi=300}
+FeaturePlot(seurat_bm,features = "WT1",order=T,reduction="HUMAP20",
+            split.by="ID",pt.size=0.8,alpha = 0.8) & 
+  scale_color_viridis(option="rocket",direction=-1,limits=c(0,2.7)) & 
+  theme_light() & coord_equal() & xlab("UMAP_1") & ylab("UMAP_2")
+ggsave("figures/AML-BM-SC_WT1-expression.pdf",width=32,height=4.5)
+```
+
+
+### WT1 average expression dotplot
+```{r,fig.width=3.5,fig.height=3.2,dpi=300}
+DotPlot(seurat_bm,features="WT1",group.by = "ID",scale = F) & 
+  scale_color_viridis(option="rocket",direction=-1,limits=c(0,NA)) & 
+  theme_light() & scale_y_discrete(limits=rev) & ylab("") & xlab("")
+ggsave("figures/AML-BM-SC_WT1-average-expression_dotplot.pdf",width=3.5,height=3.2)
+```
+
+
+###  WT1 average expression dataframe
+```{r}
+df_ae <- AverageExpression(seurat_bm,features="WT1",group.by="ID",assays = "RNA")
+data.frame(df_ae$RNA)
+```
